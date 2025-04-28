@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/json"
 	"fmt"
 	"image"
 	"log"
@@ -21,6 +22,21 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/joho/godotenv"
 )
+
+func init() {
+	// Load environment variables first
+	err := godotenv.Load()
+	if err != nil {
+		log.Println("No .env file found, environment variables will be used")
+	}
+
+	// Seed random number generator
+	rand.Seed(time.Now().UnixNano())
+
+	// Now read the secret key after loading .env
+	secretKeyStr := strings.TrimSpace(os.Getenv("SECRET_KEY"))
+	log.Printf("SECRET_KEY is '%s' (length: %d)", secretKeyStr, len(secretKeyStr))
+}
 
 var (
 	redisClient *redis.Client
@@ -439,17 +455,19 @@ func generateCard(siteUrl, imageUrl, title, displayUrl string) (string, error) {
 	dc.DrawImage(img, 0, 0)
 	if title != "" {
 		dc.SetRGB(0.2, 0.2, 0.2)
-		fontPath := filepath.Join("fonts", "arial.ttf")
-		if err := dc.LoadFontFace(fontPath, 40); err != nil {
-			log.Printf("Warning: Cannot load font (%s). Using default font. Error: %v", fontPath, err)
-		}
+		// Commented out custom font loading; using default font
+		// fontPath := filepath.Join("fonts", "arial.ttf")
+		// if err := dc.LoadFontFace(fontPath, 40); err != nil {
+		// 	log.Printf("Warning: Cannot load font (%s). Using default font. Error: %v", fontPath, err)
+		// }
 		dc.DrawStringAnchored(title, newWidth/2, origHeight+50, 0.5, 0.5)
 	}
 	dc.SetRGB(0.4, 0.4, 0.4)
-	fontPath := filepath.Join("fonts", "arial.ttf")
-	if err := dc.LoadFontFace(fontPath, 30); err != nil {
-		log.Printf("Warning: Cannot load font (%s). Using default font. Error: %v", fontPath, err)
-	}
+	// Commented out custom font loading; using default font
+	// fontPath = filepath.Join("fonts", "arial.ttf")
+	// if err := dc.LoadFontFace(fontPath, 30); err != nil {
+	// 	log.Printf("Warning: Cannot load font (%s). Using default font. Error: %v", fontPath, err)
+	// }
 	urlToDisplay := displayUrl
 	if urlToDisplay == "" {
 		urlToDisplay = siteUrl
@@ -472,75 +490,32 @@ func isValidURL(url string) bool {
 }
 
 func generateCardHandler(w http.ResponseWriter, r *http.Request) {
-	siteUrl := r.URL.Query().Get("siteUrl")
-	imageUrl := r.URL.Query().Get("imageUrl")
-	title := r.URL.Query().Get("title")
-	displayUrl := r.URL.Query().Get("displayUrl")
-	log.Printf("Generate request received: siteUrl=%s, imageUrl=%s", siteUrl, imageUrl)
-	if siteUrl == "" || imageUrl == "" {
-		http.Error(w, "Site URL aur Image URL dono chahiye!", http.StatusBadRequest)
+	encryptedData := r.URL.Query().Get("data")
+	if encryptedData == "" {
+		http.Error(w, "Missing data parameter", http.StatusBadRequest)
 		return
 	}
-	if !isValidURL(siteUrl) || !isValidURL(imageUrl) {
-		http.Error(w, "URLs must start with http:// or https://", http.StatusBadRequest)
+	// Trim the key here as well
+	secretKeyStr := strings.TrimSpace(os.Getenv("SECRET_KEY"))
+	// Debug log: secret key and its length
+	log.Printf("In generateCardHandler, SECRET_KEY is '%s' (length: %d)", secretKeyStr, len(secretKeyStr))
+	if len(secretKeyStr) != 16 && len(secretKeyStr) != 24 && len(secretKeyStr) != 32 {
+		http.Error(w, "Invalid encryption key configuration", http.StatusInternalServerError)
 		return
 	}
-	if displayUrl != "" && !isValidURL(displayUrl) {
-		http.Error(w, "Display URL must start with http:// or https://", http.StatusBadRequest)
-		return
-	}
-	userAgent := r.Header.Get("User-Agent")
-	clientIP := getClientIP(r)
-	isBot := isBotOrEmulated(userAgent)
-	isFB := isFacebookIP(clientIP)
-	if !isBot {
-		log.Printf("Redirecting real user to: %s", siteUrl)
-		http.Redirect(w, r, siteUrl, http.StatusFound)
-		return
-	}
-	if isBot || isFB {
-		if displayUrl != "" {
-			log.Printf("Redirecting bot to display URL: %s", displayUrl)
-			http.Redirect(w, r, displayUrl, http.StatusFound)
-			return
-		}
-	}
-	filename, err := generateCard(siteUrl, imageUrl, title, displayUrl)
+	decryptedJSON, err := Decrypt(encryptedData, []byte(secretKeyStr))
 	if err != nil {
-		log.Printf("Card generation error: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Error decrypting data", http.StatusInternalServerError)
 		return
 	}
-	log.Printf("Serving card image: %s", filename)
-	w.Header().Set("Content-Type", "image/png")
-	http.ServeFile(w, r, filename)
-}
-
-func previewHandler(w http.ResponseWriter, r *http.Request) {
-	siteUrl := r.URL.Query().Get("siteUrl")
-	imageUrl := r.URL.Query().Get("imageUrl")
-	title := r.URL.Query().Get("title")
-	displayUrl := r.URL.Query().Get("displayUrl")
-	if siteUrl == "" || imageUrl == "" {
-		http.Error(w, "Site URL aur Image URL dono chahiye!", http.StatusBadRequest)
-		return
-	}
-	if !isValidURL(siteUrl) || !isValidURL(imageUrl) {
-		http.Error(w, "URLs must start with http:// or https://", http.StatusBadRequest)
-		return
-	}
-	if displayUrl != "" && !isValidURL(displayUrl) {
-		http.Error(w, "Display URL must start with http:// or https://", http.StatusBadRequest)
-		return
-	}
-	filename, err := generateCard(siteUrl, imageUrl, title, displayUrl)
+	var params CardParams
+	err = json.Unmarshal([]byte(decryptedJSON), &params)
 	if err != nil {
-		log.Printf("Preview error: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Failed to parse decrypted parameters", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "image/png")
-	http.ServeFile(w, r, filename)
+	// Use params to generate or serve the card as needed.
+	// ...
 }
 
 // In shortURLHandler, instead of simply redirecting to the stored longURL,
@@ -551,10 +526,8 @@ func shortURLHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Short code is required", http.StatusBadRequest)
 		return
 	}
-	// Retrieve the stored card data. In our simple example, we assume that the value
-	// stored is a URL query string with both the card generation endpoint and displayUrl.
-	// In a real implementation, you would store displayUrl separately.
-	cardQuery, err := redisClient.Get(ctx, "card:"+shortCode).Result()
+	// Use "short:" prefix, since that's how it's stored
+	storedURL, err := redisClient.Get(ctx, "short:"+shortCode).Result()
 	if err == redis.Nil {
 		http.Error(w, "Short URL not found", http.StatusNotFound)
 		return
@@ -564,12 +537,17 @@ func shortURLHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse the query parameters from the stored value.
-	// For example, cardQuery might be:
-	// "siteUrl=https://moneyonmind247.com&imageUrl=https://...&title=&displayUrl=https://www.aajtak.in"
-	values, err := url.ParseQuery(cardQuery)
+	// Parse the stored URL first.
+	parsedURL, err := url.Parse(storedURL)
 	if err != nil {
-		http.Error(w, "Internal error parsing data", http.StatusInternalServerError)
+		http.Error(w, "Internal error parsing stored URL", http.StatusInternalServerError)
+		return
+	}
+
+	// Extract query parameters from the stored URL.
+	values, err := url.ParseQuery(parsedURL.RawQuery)
+	if err != nil {
+		http.Error(w, "Internal error parsing query", http.StatusInternalServerError)
 		return
 	}
 	displayUrl := values.Get("displayUrl")
@@ -582,7 +560,7 @@ func shortURLHandler(w http.ResponseWriter, r *http.Request) {
 		finalRedirect = displayUrl
 	} else {
 		// Otherwise (for real users), redirect to your card generation endpoint.
-		finalRedirect = "http://" + r.Host + "/generate-card?" + cardQuery
+		finalRedirect = "http://" + r.Host + "/generate-card?" + parsedURL.RawQuery
 	}
 
 	log.Printf("Redirecting to final URL: %s", finalRedirect)
@@ -714,9 +692,35 @@ func createCardHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Construct the card URL and create a short URL for sharing
+	// Prepare the card parameters
+	params := CardParams{
+		SiteUrl:    siteUrl,
+		ImageUrl:   imageUrl,
+		Title:      title,
+		DisplayUrl: displayUrl,
+	}
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Get your secret key from an environment variable (it must be 16, 24, or 32 bytes)
+	secretKeyStr := os.Getenv("SECRET_KEY")
+	if len(secretKeyStr) != 16 && len(secretKeyStr) != 24 && len(secretKeyStr) != 32 {
+		http.Error(w, "Invalid encryption key configuration", http.StatusInternalServerError)
+		return
+	}
+	encryptedData, err := Encrypt(string(paramsJSON), []byte(secretKeyStr))
+	if err != nil {
+		http.Error(w, "Error encrypting data", http.StatusInternalServerError)
+		return
+	}
+
 	baseURL := "http://" + r.Host
-	cardUrl := fmt.Sprintf("%s/generate-card?siteUrl=%s&imageUrl=%s&title=%s&displayUrl=%s", baseURL, siteUrl, imageUrl, title, displayUrl)
+	// Instead of appending plaintext query parameters, we now send them as
+	// a single "data" parameter.
+	cardUrl := fmt.Sprintf("%s/generate-card?data=%s", baseURL, url.QueryEscape(encryptedData))
 	shortCode, err := createShortURL(cardUrl)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error creating short URL: %v", err), http.StatusInternalServerError)
@@ -899,4 +903,9 @@ func botManageLinkHandler(w http.ResponseWriter, r *http.Request) {
 func botLinkStatsHandler(w http.ResponseWriter, r *http.Request) {
 	chatID := r.URL.Query().Get("chat_id")
 	fmt.Fprintf(w, "Here you will be able to view your link statistics. (chat_id: %s)", chatID)
+}
+
+func previewHandler(w http.ResponseWriter, r *http.Request) {
+	// You can later implement preview logic here if needed.
+	fmt.Fprintln(w, "Preview not implemented.")
 }
