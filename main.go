@@ -614,14 +614,15 @@ func setupRedis() {
 }
 
 func main() {
-	// Initialize Facebook IP matcher
+	// Initialize Facebook IP matcher, create directories, setup Redis, etc.
 	fbMatcher = NewMatcher(facebookCIDRs)
-	// Ensure required directories exist
 	createRequiredDirectories()
-	// Setup Redis
 	setupRedis()
 
-	// Existing routes
+	// Start the Telegram Bot in a separate goroutine
+	go startTelegramBot()
+
+	// Existing HTTP routes registration
 	http.HandleFunc("/", landingPageHandler)
 	http.HandleFunc("/login", loginHandler)
 	http.HandleFunc("/dashboard", dashboardHandler)
