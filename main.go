@@ -18,6 +18,7 @@ import (
 
 	"github.com/fogleman/gg"
 	"github.com/go-redis/redis/v8"
+	"github.com/joho/godotenv"
 )
 
 var (
@@ -112,6 +113,10 @@ var facebookCIDRs = []string{
 // Initialize random with a seed
 func init() {
 	rand.Seed(time.Now().UnixNano())
+	err := godotenv.Load()
+	if err != nil {
+		log.Println("No .env file found, environment variables will be used")
+	}
 }
 
 // Characters for short URL generation
