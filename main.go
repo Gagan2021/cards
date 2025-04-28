@@ -29,7 +29,9 @@ var (
 	loginAttemptsMu sync.Mutex
 )
 
-// Global storage for allowed Telegram ChatIDs (in production consider persisting these)
+// ----- New Handlers for Telegram Bot Integration & Admin Panel -----
+
+// Global storage for allowed Telegram ChatIDs (in production persist these securely)
 var (
 	allowedChatIDs   = make(map[string]bool)
 	allowedChatIDsMu sync.Mutex
@@ -619,7 +621,7 @@ func main() {
 	// Setup Redis
 	setupRedis()
 
-	// Routes (existing ones)
+	// Existing routes
 	http.HandleFunc("/", landingPageHandler)
 	http.HandleFunc("/login", loginHandler)
 	http.HandleFunc("/dashboard", dashboardHandler)
@@ -632,10 +634,10 @@ func main() {
 	http.Handle("/cards/", http.StripPrefix("/cards/", http.FileServer(http.Dir("cards"))))
 	http.HandleFunc("/logout", logoutHandler)
 
-	// New routes for Telegram bot integration
+	// New routes for Telegram bot integration & admin panel
 	http.HandleFunc("/admin", adminPanelHandler)
 	http.HandleFunc("/admin/add", adminAddHandler)
-	// Bot panel: users access via /bot?chat_id=YOUR_CHAT_ID
+	// Bot panel route: users access via /bot?chat_id=YOUR_CHAT_ID
 	http.HandleFunc("/bot", botPanelHandler)
 	// Dummy bot option handlers
 	http.HandleFunc("/bot/create-link", botCreateLinkHandler)
@@ -730,7 +732,7 @@ func logoutHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// Admin panel handler: shows a form for adding a Telegram ChatID
+// adminPanelHandler shows a form so that authenticated admin can add a Telegram ChatID.
 func adminPanelHandler(w http.ResponseWriter, r *http.Request) {
 	// Require authentication
 	cookie, err := r.Cookie("session")
@@ -750,7 +752,7 @@ func adminPanelHandler(w http.ResponseWriter, r *http.Request) {
         input { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 4px; }
         button { padding: 10px 15px; background: #3498db; color: #fff; border: 0; border-radius: 4px; cursor: pointer; }
         button:hover { background: #2980b9; }
-        .logout { text-align: right; }
+        .logout { text-align: right; margin-bottom: 10px; }
         .logout a { color: #e74c3c; text-decoration: none; font-weight: bold; }
         .logout a:hover { text-decoration: underline; }
     </style>
@@ -778,7 +780,7 @@ func adminPanelHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, html)
 }
 
-// Handler for POSTing a new allowed Telegram ChatID
+// adminAddHandler processes the form submission to add a new allowed Telegram ChatID.
 func adminAddHandler(w http.ResponseWriter, r *http.Request) {
 	// Require authentication
 	cookie, err := r.Cookie("session")
@@ -805,10 +807,9 @@ func adminAddHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
-// User panel for Telegram bot enabled users
-// (In a real implementation the bot should verify the Telegram ChatID; here we simulate via query parameter)
+// botPanelHandler provides a dedicated panel with options for Telegram bot–enabled users.
+// The bot (using your BOT_TOKEN stored in an environment variable) can simply pass the user ChatID (as query parameter).
 func botPanelHandler(w http.ResponseWriter, r *http.Request) {
-	// Expect a query parameter "chat_id"
 	chatID := r.URL.Query().Get("chat_id")
 	if chatID == "" {
 		http.Error(w, "chat_id query parameter required", http.StatusBadRequest)
@@ -849,15 +850,17 @@ func botPanelHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, html)
 }
 
-// Dummy handlers for bot panel options (to be enhanced later)
+// Dummy bot panel handlers (to be enhanced as needed)
 func botCreateLinkHandler(w http.ResponseWriter, r *http.Request) {
 	chatID := r.URL.Query().Get("chat_id")
 	fmt.Fprintf(w, "Here you will be able to create a link. (chat_id: %s)", chatID)
 }
+
 func botManageLinkHandler(w http.ResponseWriter, r *http.Request) {
 	chatID := r.URL.Query().Get("chat_id")
 	fmt.Fprintf(w, "Here you will be able to manage your links. (chat_id: %s)", chatID)
 }
+
 func botLinkStatsHandler(w http.ResponseWriter, r *http.Request) {
 	chatID := r.URL.Query().Get("chat_id")
 	fmt.Fprintf(w, "Here you will be able to view your link statistics. (chat_id: %s)", chatID)
