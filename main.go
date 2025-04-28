@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"fmt"
 	"image"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fogleman/gg"
@@ -22,6 +24,19 @@ var (
 	redisClient *redis.Client
 	ctx         = context.Background()
 	fbMatcher   *IPMatcher // Added Facebook IP matcher
+
+	loginAttempts   = make(map[string]*loginAttempt)
+	loginAttemptsMu sync.Mutex
+)
+
+type loginAttempt struct {
+	Count       int
+	LastAttempt time.Time
+}
+
+const (
+	loginAttemptWindow = 1 * time.Minute
+	maxLoginAttempts   = 5
 )
 
 // ----------------------------------
@@ -179,15 +194,36 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// POST: process login
+	// POST: process login with rate limiting
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Invalid form", http.StatusBadRequest)
 		return
 	}
+	ip := getClientIP(r)
+	loginAttemptsMu.Lock()
+	attempt, exists := loginAttempts[ip]
+	if !exists || time.Since(attempt.LastAttempt) > loginAttemptWindow {
+		attempt = &loginAttempt{Count: 0, LastAttempt: time.Now()}
+		loginAttempts[ip] = attempt
+	}
+	attempt.LastAttempt = time.Now()
+	if attempt.Count >= maxLoginAttempts {
+		loginAttemptsMu.Unlock()
+		http.Error(w, "Too many login attempts. Please try again later.", http.StatusTooManyRequests)
+		return
+	}
+	attempt.Count++
+	loginAttemptsMu.Unlock()
+
 	username := r.FormValue("username")
 	password := r.FormValue("password")
-	if username == validUsername && password == validPassword {
-		// Set a simple cookie for session
+	if subtle.ConstantTimeCompare([]byte(username), []byte(validUsername)) == 1 &&
+		subtle.ConstantTimeCompare([]byte(password), []byte(validPassword)) == 1 {
+		// Successful login: reset rate limit for this IP
+		loginAttemptsMu.Lock()
+		delete(loginAttempts, ip)
+		loginAttemptsMu.Unlock()
+		// Set session cookie
 		http.SetCookie(w, &http.Cookie{
 			Name:    "session",
 			Value:   "authenticated",
@@ -208,8 +244,6 @@ func dashboardHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-
-	// Dashboard now uses a secure POST form to let the server process card creation completely
 	html := `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -225,9 +259,13 @@ func dashboardHandler(w http.ResponseWriter, r *http.Request) {
         input[type="text"] { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; }
         button { padding: 10px 15px; background-color: #3498db; border: none; border-radius: 4px; color: #fff; cursor: pointer; font-size: 16px; }
         button:hover { background-color: #2980b9; }
+        .logout { text-align: right; margin-top: -10px; }
+        .logout a { color: #e74c3c; text-decoration: none; font-weight: bold; }
+        .logout a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
+    <div class="logout"><a href="/logout">Logout</a></div>
     <h1>Dashboard</h1>
     <p>Welcome! Use the form below to create your social media card securely.</p>
     <form method="POST" action="/create-card">
@@ -586,6 +624,7 @@ func main() {
 	http.HandleFunc("/shorten", shortenURLHandler)
 	http.Handle("/fonts/", http.StripPrefix("/fonts/", http.FileServer(http.Dir("fonts"))))
 	http.Handle("/cards/", http.StripPrefix("/cards/", http.FileServer(http.Dir("cards"))))
+	http.HandleFunc("/logout", logoutHandler)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -660,4 +699,17 @@ func createCardHandler(w http.ResponseWriter, r *http.Request) {
 </html>`, filepath.Base(filename), shortURL, shortURL)
 	w.Header().Set("Content-Type", "text/html")
 	fmt.Fprint(w, resultHTML)
+}
+
+// New logoutHandler to clear session cookie and redirect to landing page.
+func logoutHandler(w http.ResponseWriter, r *http.Request) {
+	cookie := &http.Cookie{
+		Name:    "session",
+		Value:   "",
+		Path:    "/",
+		Expires: time.Unix(0, 0),
+		MaxAge:  -1,
+	}
+	http.SetCookie(w, cookie)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
