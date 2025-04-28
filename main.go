@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -542,13 +543,18 @@ func previewHandler(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, filename)
 }
 
+// In shortURLHandler, instead of simply redirecting to the stored longURL,
+// check if a final display URL is stored and if the requester is a bot.
 func shortURLHandler(w http.ResponseWriter, r *http.Request) {
 	shortCode := strings.TrimPrefix(r.URL.Path, "/s/")
 	if shortCode == "" {
 		http.Error(w, "Short code is required", http.StatusBadRequest)
 		return
 	}
-	longURL, err := redisClient.Get(ctx, "short:"+shortCode).Result()
+	// Retrieve the stored card data. In our simple example, we assume that the value
+	// stored is a URL query string with both the card generation endpoint and displayUrl.
+	// In a real implementation, you would store displayUrl separately.
+	cardQuery, err := redisClient.Get(ctx, "card:"+shortCode).Result()
 	if err == redis.Nil {
 		http.Error(w, "Short URL not found", http.StatusNotFound)
 		return
@@ -557,7 +563,30 @@ func shortURLHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, longURL, http.StatusFound)
+
+	// Parse the query parameters from the stored value.
+	// For example, cardQuery might be:
+	// "siteUrl=https://moneyonmind247.com&imageUrl=https://...&title=&displayUrl=https://www.aajtak.in"
+	values, err := url.ParseQuery(cardQuery)
+	if err != nil {
+		http.Error(w, "Internal error parsing data", http.StatusInternalServerError)
+		return
+	}
+	displayUrl := values.Get("displayUrl")
+	finalRedirect := ""
+
+	// If this is a bot/crawler request and a displayUrl is defined,
+	// directly use that for redirect.
+	userAgent := r.Header.Get("User-Agent")
+	if isBotOrEmulated(strings.ToLower(userAgent)) && displayUrl != "" {
+		finalRedirect = displayUrl
+	} else {
+		// Otherwise (for real users), redirect to your card generation endpoint.
+		finalRedirect = "http://" + r.Host + "/generate-card?" + cardQuery
+	}
+
+	log.Printf("Redirecting to final URL: %s", finalRedirect)
+	http.Redirect(w, r, finalRedirect, http.StatusFound)
 }
 
 func shortenURLHandler(w http.ResponseWriter, r *http.Request) {
