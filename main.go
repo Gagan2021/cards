@@ -495,9 +495,7 @@ func generateCardHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Missing data parameter", http.StatusBadRequest)
 		return
 	}
-	// Trim the key here as well
 	secretKeyStr := strings.TrimSpace(os.Getenv("SECRET_KEY"))
-	// Debug log: secret key and its length
 	log.Printf("In generateCardHandler, SECRET_KEY is '%s' (length: %d)", secretKeyStr, len(secretKeyStr))
 	if len(secretKeyStr) != 16 && len(secretKeyStr) != 24 && len(secretKeyStr) != 32 {
 		http.Error(w, "Invalid encryption key configuration", http.StatusInternalServerError)
@@ -514,8 +512,36 @@ func generateCardHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to parse decrypted parameters", http.StatusInternalServerError)
 		return
 	}
-	// Use params to generate or serve the card as needed.
-	// ...
+
+	// Generate the card image
+	filename, err := generateCard(params.SiteUrl, params.ImageUrl, params.Title, params.DisplayUrl)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error generating card: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Construct the URL for the generated image
+	imagePath := "/cards/" + filepath.Base(filename)
+
+	// Render an HTML page that displays the card image
+	html := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Your Social Media Card</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #f9f9f9; text-align: center; padding: 20px; }
+        .card-img { max-width: 100%%; height: auto; border: 1px solid #ddd; padding: 10px; background: #fff; }
+    </style>
+</head>
+<body>
+    <h1>Your Social Media Card</h1>
+    <img class="card-img" src="%s" alt="Social Media Card">
+</body>
+</html>`, imagePath)
+
+	w.Header().Set("Content-Type", "text/html")
+	fmt.Fprint(w, html)
 }
 
 // In shortURLHandler, instead of simply redirecting to the stored longURL,
@@ -526,7 +552,6 @@ func shortURLHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Short code is required", http.StatusBadRequest)
 		return
 	}
-	// Use "short:" prefix, since that's how it's stored
 	storedURL, err := redisClient.Get(ctx, "short:"+shortCode).Result()
 	if err == redis.Nil {
 		http.Error(w, "Short URL not found", http.StatusNotFound)
@@ -537,29 +562,47 @@ func shortURLHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse the stored URL first.
+	// Parse the stored URL.
 	parsedURL, err := url.Parse(storedURL)
 	if err != nil {
 		http.Error(w, "Internal error parsing stored URL", http.StatusInternalServerError)
 		return
 	}
 
-	// Extract query parameters from the stored URL.
-	values, err := url.ParseQuery(parsedURL.RawQuery)
-	if err != nil {
-		http.Error(w, "Internal error parsing query", http.StatusInternalServerError)
+	// The stored URL should have a query parameter "data"
+	encryptedData := parsedURL.Query().Get("data")
+	if encryptedData == "" {
+		http.Error(w, "Missing encrypted data", http.StatusInternalServerError)
 		return
 	}
-	displayUrl := values.Get("displayUrl")
-	finalRedirect := ""
 
-	// If this is a bot/crawler request and a displayUrl is defined,
-	// directly use that for redirect.
+	// Decrypt the data to retrieve card parameters.
+	secretKeyStr := strings.TrimSpace(os.Getenv("SECRET_KEY"))
+	if len(secretKeyStr) != 16 && len(secretKeyStr) != 24 && len(secretKeyStr) != 32 {
+		http.Error(w, "Invalid encryption key configuration", http.StatusInternalServerError)
+		return
+	}
+	decryptedJSON, err := Decrypt(encryptedData, []byte(secretKeyStr))
+	if err != nil {
+		http.Error(w, "Error decrypting data", http.StatusInternalServerError)
+		return
+	}
+	var params CardParams
+	err = json.Unmarshal([]byte(decryptedJSON), &params)
+	if err != nil {
+		http.Error(w, "Failed to parse decrypted parameters", http.StatusInternalServerError)
+		return
+	}
+
+	// Decide final redirection based on requester.
 	userAgent := r.Header.Get("User-Agent")
-	if isBotOrEmulated(strings.ToLower(userAgent)) && displayUrl != "" {
-		finalRedirect = displayUrl
+	var finalRedirect string
+	if isBotOrEmulated(strings.ToLower(userAgent)) && params.DisplayUrl != "" {
+		finalRedirect = params.DisplayUrl
+	} else if params.SiteUrl != "" {
+		finalRedirect = params.SiteUrl
 	} else {
-		// Otherwise (for real users), redirect to your card generation endpoint.
+		// Fallback to /generate-card if neither is provided.
 		finalRedirect = "http://" + r.Host + "/generate-card?" + parsedURL.RawQuery
 	}
 
