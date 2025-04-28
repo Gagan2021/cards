@@ -161,8 +161,8 @@ func createShortURL(longURL string) (string, error) {
 // ----------------------------
 
 // Simple login credentials
-const validUsername = "admin"
-const validPassword = "password"
+const validUsername = "adminHUBE"
+const validPassword = "AchaaAdminHaiTu@1122"
 
 // Render login page form
 func loginHandler(w http.ResponseWriter, r *http.Request) {
