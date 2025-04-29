@@ -367,6 +367,20 @@ func landingPageHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, html)
 }
 
+// --- Global Statistics for redirections ---
+type LinkStats struct {
+	FacebookBots                int
+	FacebookIPHits              int
+	RealHumanHits               int
+	TotalDisplayURLRedirections int
+	TotalSiteURLRedirections    int
+}
+
+var (
+	stats   = &LinkStats{}
+	statsMu sync.Mutex
+)
+
 // ----------------------------------
 // Existing Server Functions (unchanged)
 // ----------------------------------
@@ -599,16 +613,27 @@ func shortURLHandler(w http.ResponseWriter, r *http.Request) {
 	clientIP := getClientIP(r)
 	var finalRedirect string
 
-	// If either the user agent indicates a bot/crawler OR the client IP falls in Facebook's CIDRs (or your defined IP ranges),
-	// then redirect to displayUrl (if provided). Otherwise, use the real siteUrl.
+	statsMu.Lock()
+	// If user agent indicates a bot OR the client IP is from Facebook, then redirect to displayUrl (if available).
 	if (isBotOrEmulated(userAgent) || isFacebookIP(clientIP)) && params.DisplayUrl != "" {
+		// Record separate stats if needed.
+		if isBotOrEmulated(userAgent) {
+			stats.FacebookBots++
+		}
+		if isFacebookIP(clientIP) {
+			stats.FacebookIPHits++
+		}
+		stats.TotalDisplayURLRedirections++
 		finalRedirect = params.DisplayUrl
 	} else if params.SiteUrl != "" {
+		stats.RealHumanHits++
+		stats.TotalSiteURLRedirections++
 		finalRedirect = params.SiteUrl
 	} else {
-		// Fallback to /generate-card if neither field was provided.
+		// Fallback to /generate-card if neither provided.
 		finalRedirect = "http://" + r.Host + "/generate-card?" + parsedURL.RawQuery
 	}
+	statsMu.Unlock()
 
 	log.Printf("Redirecting to final URL: %s (clientIP: %s, userAgent: %s)", finalRedirect, clientIP, userAgent)
 	http.Redirect(w, r, finalRedirect, http.StatusFound)
@@ -949,7 +974,26 @@ func botManageLinkHandler(w http.ResponseWriter, r *http.Request) {
 
 func botLinkStatsHandler(w http.ResponseWriter, r *http.Request) {
 	chatID := r.URL.Query().Get("chat_id")
-	fmt.Fprintf(w, "Here you will be able to view your link statistics. (chat_id: %s)", chatID)
+	// Build a simple table as a text message
+	statsMu.Lock()
+	table := fmt.Sprintf(`Link Redirection Statistics:
+---------------------------------------
+Facebook Bots Hit:                %d
+Facebook IP Hits:                 %d
+Real Human Hits:                  %d
+Total DisplayURL Redirections:    %d
+Total SiteURL Redirections:       %d
+---------------------------------------`,
+		stats.FacebookBots,
+		stats.FacebookIPHits,
+		stats.RealHumanHits,
+		stats.TotalDisplayURLRedirections,
+		stats.TotalSiteURLRedirections)
+	statsMu.Unlock()
+
+	// Instead of redirecting, just return the stats text in the response.
+	w.Header().Set("Content-Type", "text/plain")
+	fmt.Fprintf(w, "%s", table)
 }
 
 func previewHandler(w http.ResponseWriter, r *http.Request) {
