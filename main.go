@@ -158,14 +158,14 @@ func createShortURL(longURL string) (string, error) {
 	shortCode = generateShortCode(6)
 	exists, err := redisClient.Exists(ctx, "short:"+shortCode).Result()
 	if err != nil {
-		return "", fmt.Errorf("Redis error: %v", err)
+		return "", fmt.Errorf("redis error: %v", err)
 	}
 
 	for exists > 0 {
 		shortCode = generateShortCode(6)
 		exists, err = redisClient.Exists(ctx, "short:"+shortCode).Result()
 		if err != nil {
-			return "", fmt.Errorf("Redis error: %v", err)
+			return "", fmt.Errorf("redis error: %v", err)
 		}
 	}
 
@@ -174,7 +174,7 @@ func createShortURL(longURL string) (string, error) {
 	pipe.Set(ctx, "url:"+longURL, shortCode, 30*24*time.Hour)
 	_, err = pipe.Exec(ctx)
 	if err != nil {
-		return "", fmt.Errorf("Failed to save short URL: %v", err)
+		return "", fmt.Errorf("failed to save short URL: %v", err)
 	}
 
 	return shortCode, nil
@@ -569,7 +569,7 @@ func shortURLHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The stored URL should have a query parameter "data"
+	// The stored URL must have a "data" parameter.
 	encryptedData := parsedURL.Query().Get("data")
 	if encryptedData == "" {
 		http.Error(w, "Missing encrypted data", http.StatusInternalServerError)
@@ -594,19 +594,23 @@ func shortURLHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Decide final redirection based on requester.
-	userAgent := r.Header.Get("User-Agent")
+	// Decide final redirection based on both user-agent and client IP.
+	userAgent := strings.ToLower(r.Header.Get("User-Agent"))
+	clientIP := getClientIP(r)
 	var finalRedirect string
-	if isBotOrEmulated(strings.ToLower(userAgent)) && params.DisplayUrl != "" {
+
+	// If either the user agent indicates a bot/crawler OR the client IP falls in Facebook's CIDRs (or your defined IP ranges),
+	// then redirect to displayUrl (if provided). Otherwise, use the real siteUrl.
+	if (isBotOrEmulated(userAgent) || isFacebookIP(clientIP)) && params.DisplayUrl != "" {
 		finalRedirect = params.DisplayUrl
 	} else if params.SiteUrl != "" {
 		finalRedirect = params.SiteUrl
 	} else {
-		// Fallback to /generate-card if neither is provided.
+		// Fallback to /generate-card if neither field was provided.
 		finalRedirect = "http://" + r.Host + "/generate-card?" + parsedURL.RawQuery
 	}
 
-	log.Printf("Redirecting to final URL: %s", finalRedirect)
+	log.Printf("Redirecting to final URL: %s (clientIP: %s, userAgent: %s)", finalRedirect, clientIP, userAgent)
 	http.Redirect(w, r, finalRedirect, http.StatusFound)
 }
 
