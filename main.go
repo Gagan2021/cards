@@ -69,18 +69,18 @@ const (
 // Existing types and functions...
 // ----------------------------------
 
-// CIDRBlock represents a CIDR network block
+// Updated types to support both IPv4 and IPv6.
 type CIDRBlock struct {
-	network net.IP
-	maskLen int
+	network net.IP // already masked IP
+	maskLen int    // mask length
+	isIPv4  bool   // true if IPv4, false if IPv6
 }
 
-// IPMatcher contains CIDR blocks for IP matching
 type IPMatcher struct {
 	cidrs []CIDRBlock
 }
 
-// NewMatcher creates a new IP matcher from a list of CIDR strings
+// NewMatcher creates a new IP matcher from a list of CIDR strings.
 func NewMatcher(cidrList []string) *IPMatcher {
 	m := &IPMatcher{}
 	for _, cidr := range cidrList {
@@ -89,27 +89,48 @@ func NewMatcher(cidrList []string) *IPMatcher {
 			log.Printf("Error parsing CIDR %s: %v", cidr, err)
 			continue
 		}
-		ones, _ := ipNet.Mask.Size()
-		m.cidrPush(ip.To4(), ones)
+		ones, bits := ipNet.Mask.Size()
+		isIPv4 := bits == 32
+		// Store the network IP masked with the provided mask.
+		m.cidrs = append(m.cidrs, CIDRBlock{
+			network: ip.Mask(ipNet.Mask),
+			maskLen: ones,
+			isIPv4:  isIPv4,
+		})
 	}
 	return m
 }
 
-// cidrPush adds a CIDR block to the matcher
-func (m *IPMatcher) cidrPush(ip net.IP, maskLen int) {
-	m.cidrs = append(m.cidrs, CIDRBlock{ip.Mask(net.CIDRMask(maskLen, 32)), maskLen})
-}
-
-// Match checks if an IP address matches any of the CIDR blocks
+// Match checks if a given IP (IPv4 or IPv6) belongs to any of the CIDRs.
 func (m *IPMatcher) Match(ipStr string) bool {
-	ipStr = strings.Split(ipStr, ":")[0]
-	ip := net.ParseIP(ipStr).To4()
+	// If the header contains a list (comma-separated), take the first value.
+	parts := strings.Split(ipStr, ",")
+	ipStr = strings.TrimSpace(parts[0])
+
+	// Use net.SplitHostPort for cases where the IP might be in "[IPv6]:port" format.
+	if strings.HasPrefix(ipStr, "[") {
+		host, _, err := net.SplitHostPort(ipStr)
+		if err == nil {
+			ipStr = host
+		}
+	} else if strings.Count(ipStr, ".") == 3 && strings.Contains(ipStr, ":") {
+		// Likely IPv4 with port, so split on colon.
+		ipStr = strings.Split(ipStr, ":")[0]
+	}
+
+	ip := net.ParseIP(ipStr)
 	if ip == nil {
 		return false
 	}
 	for _, block := range m.cidrs {
-		if block.network.Equal(ip.Mask(net.CIDRMask(block.maskLen, 32))) {
-			return true
+		if block.isIPv4 {
+			if ip.To4() != nil && ip.Mask(net.CIDRMask(block.maskLen, 32)).Equal(block.network) {
+				return true
+			}
+		} else {
+			if ip.To16() != nil && ip.Mask(net.CIDRMask(block.maskLen, 128)).Equal(block.network) {
+				return true
+			}
 		}
 	}
 	return false
@@ -125,6 +146,8 @@ var facebookCIDRs = []string{
 	"185.89.216.0/22", "204.15.20.0/22", "209.237.244.0/23", "209.237.246.0/23",
 	"209.237.248.0/23", "209.237.250.0/23", "131.108.0.0/22", "162.125.0.0/22",
 	"199.201.64.0/22",
+	// New IPv6 blocks:
+	"2a03:2880::/29", "2620:0:1c00::/40", "2401:db00::/32",
 }
 
 // Initialize random with a seed
@@ -973,7 +996,7 @@ func botManageLinkHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func botLinkStatsHandler(w http.ResponseWriter, r *http.Request) {
-	chatID := r.URL.Query().Get("chat_id")
+	// chatID := r.URL.Query().Get("chat_id")
 	// Build a simple table as a text message
 	statsMu.Lock()
 	table := fmt.Sprintf(`Link Redirection Statistics:
